@@ -10,7 +10,13 @@ from firebase_admin import credentials, db
 # Firebase project config
 API_KEY = "AIzaSyAfc-XS006oylA3Eh96xvzw_CfsRlY_i6M"
 DATABASE_URL = "https://gameify-life-8b668-default-rtdb.europe-west1.firebasedatabase.app/"
-FIREBASE_KEY_FILE = "firebase_key.json"
+import json
+import tempfile
+
+if "FIREBASE_KEY_JSON" in st.secrets:
+    with tempfile.NamedTemporaryFile(delete=False, mode='w') as f:
+        f.write(st.secrets["FIREBASE_KEY_JSON"])
+        FIREBASE_KEY_FILE = f.name
 
 # Init Firebase Admin for DB access
 if os.path.exists(FIREBASE_KEY_FILE) and not firebase_admin._apps:
