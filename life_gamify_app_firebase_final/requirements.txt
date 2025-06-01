@@ -1,5 +1,0 @@
-streamlit
-pandas
-matplotlib
-firebase-admin
-pyrebase4
