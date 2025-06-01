@@ -8,8 +8,8 @@ import firebase_admin
 from firebase_admin import credentials, db
 
 # Firebase project config
-API_KEY = "YOUR_FIREBASE_API_KEY"
-DATABASE_URL = "https://your-project-id.firebaseio.com/"
+API_KEY = "AIzaSyAfc-XS006oylA3Eh96xvzw_CfsRlY_i6M"
+DATABASE_URL = "https://gameify-life-8b668-default-rtdb.europe-west1.firebasedatabase.app/"
 FIREBASE_KEY_FILE = "firebase_key.json"
 
 # Init Firebase Admin for DB access
