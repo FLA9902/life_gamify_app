@@ -1,33 +1,27 @@
 import streamlit as st
 import pandas as pd
+import requests
 import json
 from datetime import datetime, timedelta
 import os
-
-import pyrebase
 import firebase_admin
 from firebase_admin import credentials, db
 
-# Firebase configuration (you must provide your actual config here)
-firebase_config = {
-    "apiKey": "your-api-key",
-    "authDomain": "your-project.firebaseapp.com",
-    "databaseURL": "https://your-project.firebaseio.com",
-    "storageBucket": "your-project.appspot.com"
-}
+# Firebase project config
+API_KEY = "YOUR_FIREBASE_API_KEY"
+DATABASE_URL = "https://your-project-id.firebaseio.com/"
+FIREBASE_KEY_FILE = "firebase_key.json"
 
-FIREBASE_KEY_PATH = "firebase_key.json"
+# Init Firebase Admin for DB access
+if os.path.exists(FIREBASE_KEY_FILE) and not firebase_admin._apps:
+    cred = credentials.Certificate(FIREBASE_KEY_FILE)
+    firebase_admin.initialize_app(cred, {'databaseURL': DATABASE_URL})
 
-# Initialize pyrebase for auth
-firebase = pyrebase.initialize_app(firebase_config)
-auth = firebase.auth()
+# Authentication REST endpoints
+FIREBASE_SIGNUP = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
+FIREBASE_SIGNIN = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
 
-# Initialize firebase-admin for database
-if os.path.exists(FIREBASE_KEY_PATH) and not firebase_admin._apps:
-    cred = credentials.Certificate(FIREBASE_KEY_PATH)
-    firebase_admin.initialize_app(cred, {'databaseURL': firebase_config["databaseURL"]})
-
-# Default user data template
+# Default data template
 def default_user_data():
     return {
         "xp": 0,
@@ -41,135 +35,124 @@ def default_user_data():
         "purchased_avatars": []
     }
 
-# Firebase helpers
-def fetch_user_data(user_id):
-    ref = db.reference(f"users/{user_id}")
-    data = ref.get()
-    return data if data else default_user_data()
-
-def save_user_data(user_id, data):
-    ref = db.reference(f"users/{user_id}")
-    ref.set(data)
-
-# XP logic
 def xp_to_next_level(level):
     return int(100 * (level ** 1.5))
 
-def gain_xp(user_data, amount):
-    user_data["xp"] += amount
-    while user_data["xp"] >= xp_to_next_level(user_data["level"]):
-        user_data["xp"] -= xp_to_next_level(user_data["level"])
-        user_data["level"] += 1
+def gain_xp(data, amount):
+    data["xp"] += amount
+    while data["xp"] >= xp_to_next_level(data["level"]):
+        data["xp"] -= xp_to_next_level(data["level"])
+        data["level"] += 1
 
-def update_streak(user_data):
+def update_streak(data):
     today = datetime.today().date()
-    last_date = datetime.strptime(user_data["last_task_date"], "%Y-%m-%d").date() if user_data["last_task_date"] else None
-    if last_date:
-        if today == last_date + timedelta(days=1):
-            user_data["streak"] += 1
-        elif today > last_date + timedelta(days=1):
-            user_data["streak"] = 1
+    last = datetime.strptime(data["last_task_date"], "%Y-%m-%d").date() if data["last_task_date"] else None
+    if last:
+        if today == last + timedelta(days=1):
+            data["streak"] += 1
+        elif today > last + timedelta(days=1):
+            data["streak"] = 1
     else:
-        user_data["streak"] = 1
-    user_data["last_task_date"] = today.isoformat()
+        data["streak"] = 1
+    data["last_task_date"] = today.isoformat()
 
-# Session state
-if "user" not in st.session_state:
-    st.session_state.user = None
+# Auth + user session
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+if "id_token" not in st.session_state:
+    st.session_state.id_token = None
 if "user_data" not in st.session_state:
     st.session_state.user_data = default_user_data()
 
-# Login/Register UI
-st.title("🚀 LevelUp Life - Web")
-st.markdown("Gamify your goals and habits!")
-
-if not st.session_state.user:
+# UI Login/Register
+st.title("🎮 LevelUp Life (Firebase REST)")
+if not st.session_state.user_id:
     login_tab, register_tab = st.tabs(["🔐 Login", "🆕 Register"])
 
     with login_tab:
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
         if st.button("Login"):
-            try:
-                user = auth.sign_in_with_email_and_password(email, password)
-                st.success("Logged in!")
-                st.session_state.user = user
-                st.session_state.user_data = fetch_user_data(user["localId"])
+            resp = requests.post(FIREBASE_SIGNIN, json={"email": email, "password": password, "returnSecureToken": True})
+            if resp.ok:
+                data = resp.json()
+                st.session_state.user_id = data["localId"]
+                st.session_state.id_token = data["idToken"]
+                user_ref = db.reference(f"users/{data['localId']}")
+                st.session_state.user_data = user_ref.get() or default_user_data()
                 st.experimental_rerun()
-            except:
+            else:
                 st.error("Login failed.")
 
     with register_tab:
         email = st.text_input("New Email")
         password = st.text_input("New Password", type="password")
         if st.button("Register"):
-            try:
-                user = auth.create_user_with_email_and_password(email, password)
+            resp = requests.post(FIREBASE_SIGNUP, json={"email": email, "password": password, "returnSecureToken": True})
+            if resp.ok:
                 st.success("Registered! Please login.")
-            except:
+            else:
                 st.error("Registration failed.")
 
 else:
-    user = st.session_state.user
-    data = st.session_state.user_data
+    user_data = st.session_state.user_data
+    uid = st.session_state.user_id
 
     st.sidebar.title("👤 Profile")
     avatars = ["🐱", "🐸", "🦄", "🐢", "🐳"]
-    selected_avatar = st.sidebar.selectbox("Avatar", avatars, index=avatars.index(data["avatar"]))
-    data["avatar"] = selected_avatar
+    selected_avatar = st.sidebar.selectbox("Avatar", avatars, index=avatars.index(user_data["avatar"]))
+    user_data["avatar"] = selected_avatar
 
-    st.sidebar.markdown(f"### {data['avatar']} Level {data['level']}")
-    st.sidebar.progress(data["xp"] / xp_to_next_level(data["level"]))
-    st.sidebar.text(f"XP: {data['xp']} / {xp_to_next_level(data['level'])}")
-    st.sidebar.text(f"Coins: {data['coins']}")
-    st.sidebar.text(f"🔥 Streak: {data['streak']} days")
+    st.sidebar.markdown(f"### {user_data['avatar']} Level {user_data['level']}")
+    st.sidebar.progress(user_data["xp"] / xp_to_next_level(user_data["level"]))
+    st.sidebar.text(f"XP: {user_data['xp']} / {xp_to_next_level(user_data['level'])}")
+    st.sidebar.text(f"Coins: {user_data['coins']}")
+    st.sidebar.text(f"🔥 Streak: {user_data['streak']} days")
 
-    tabs = st.tabs(["🏠 Home", "📜 History", "🛒 Shop", "📈 Stats", "🔔 Reminder", "🚪 Logout"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Home", "📜 History", "🛒 Shop", "📈 Stats", "🚪 Logout"])
 
-    with tabs[0]:
-        st.header("🧠 Tasks")
+    with tab1:
+        st.header("🧠 Today's Tasks")
         if st.button("➕ Add Habit"):
-            data["tasks"].append({"title": "New Habit", "type": "habit", "completed": False})
+            user_data["tasks"].append({"title": "New Habit", "type": "habit", "completed": False})
         if st.button("➕ Add Goal"):
-            data["tasks"].append({"title": "New Goal", "type": "goal", "completed": False})
-        for task in data["tasks"]:
+            user_data["tasks"].append({"title": "New Goal", "type": "goal", "completed": False})
+        for task in user_data["tasks"]:
             if not task["completed"]:
                 if st.button(f"✅ {task['title']}"):
                     task["completed"] = True
-                    gain_xp(data, 50)
-                    data["coins"] += 10
-                    update_streak(data)
-                    data["history"].append({
-                        "title": task["title"],
-                        "date": datetime.now().strftime("%Y-%m-%d")
-                    })
+                    gain_xp(user_data, 50)
+                    user_data["coins"] += 10
+                    update_streak(user_data)
+                    user_data["history"].append({"title": task["title"], "date": datetime.now().strftime("%Y-%m-%d")})
 
-    with tabs[1]:
+    with tab2:
         st.header("🕒 Task History")
-        if data["history"]:
-            st.dataframe(pd.DataFrame(data["history"]))
+        if user_data["history"]:
+            df = pd.DataFrame(user_data["history"])
+            st.dataframe(df)
         else:
             st.info("No completed tasks yet.")
 
-    with tabs[2]:
-        st.header("🛍️ Shop")
+    with tab3:
+        st.header("🛍️ Avatar Shop")
         shop_items = [{"emoji": "🧙", "price": 50}, {"emoji": "🦊", "price": 100}]
         for item in shop_items:
-            owned = item["emoji"] in data["purchased_avatars"]
+            owned = item["emoji"] in user_data["purchased_avatars"]
             col1, col2 = st.columns([1, 2])
             col1.markdown(f"### {item['emoji']}")
             if owned:
                 col2.success("Owned")
-            elif data["coins"] >= item["price"]:
+            elif user_data["coins"] >= item["price"]:
                 if col2.button(f"Buy for {item['price']} coins", key=item["emoji"]):
-                    data["coins"] -= item["price"]
-                    data["purchased_avatars"].append(item["emoji"])
+                    user_data["coins"] -= item["price"]
+                    user_data["purchased_avatars"].append(item["emoji"])
             else:
                 col2.warning("Not enough coins")
 
-    with tabs[3]:
+    with tab4:
         st.header("📊 Weekly XP Chart")
-        df = pd.DataFrame(data["history"])
+        df = pd.DataFrame(user_data["history"])
         if not df.empty:
             df["date"] = pd.to_datetime(df["date"])
             weekly = df.groupby(df["date"].dt.day_name()).count()["title"]
@@ -177,16 +160,12 @@ else:
         else:
             st.info("No data yet")
 
-    with tabs[4]:
-        st.header("🔔 Reminders")
-        if st.button("Send Daily Reminder"):
-            st.toast("🌟 Time to level up your life!")
-
-    with tabs[5]:
+    with tab5:
         if st.button("Logout"):
-            st.session_state.user = None
+            st.session_state.user_id = None
+            st.session_state.id_token = None
             st.session_state.user_data = default_user_data()
             st.success("Logged out")
             st.experimental_rerun()
 
-    save_user_data(user["localId"], data)
+    db.reference(f"users/{uid}").set(user_data)
